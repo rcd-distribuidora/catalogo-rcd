@@ -448,22 +448,43 @@ window.addEventListener('resize', agendar);
 function render(){
   montaChips();
   const q = fQ.trim().toLowerCase();
+  const carrossel = document.getElementById('carrossel');
+  const faixa = document.querySelector('.marcasfaixa');
   const res = PRODUTOS.filter(p =>
     (fCat === 'todos' || p.cat === fCat) &&
     (fMarca === 'todas' || p.marca === fMarca) &&
     casaBusca(p));
+  if (q) res.sort((a,b) => nota(b) - nota(a));
 
   count.textContent = res.length === 0 ? 'nenhum resultado' :
     `${res.length} ${res.length === 1 ? 'produto' : 'produtos'}`;
 
+  if (!res.length && q && (fCat !== 'todos' || fMarca !== 'todas')) {
+    const fora = PRODUTOS.filter(casaBusca).length;
+    if (fora) {
+      lista.innerHTML = `<div class="vazio"><b>Nenhum resultado com os filtros selecionados.</b><br>
+        Encontramos ${fora} ${fora === 1 ? 'produto' : 'produtos'} para essa busca no catálogo completo.<br>
+        <button id="verTodosBusca" style="margin-top:16px;background:#fff;color:var(--petroleo);border:1px solid var(--borda);border-radius:8px;padding:12px 22px;font:inherit;font-weight:700;font-size:14px;cursor:pointer;box-shadow:0 1px 3px rgba(25,57,74,.08)">Ver ${fora === 1 ? 'o produto' : 'todos'}</button></div>`;
+      document.getElementById('verTodosBusca').onclick = () => { fCat = 'todos'; fMarca = 'todas'; render(); };
+      return;
+    }
+  }
   if (!res.length) {
+    const sug = q ? parecidos(6) : [];
+    if (sug.length) {
+      carrossel.style.display = 'none'; faixa.style.display = 'none';
+      count.textContent = 'sugestões';
+      lista.innerHTML = `<div class="vazio" style="padding:26px 20px 18px"><b>Não achamos exatamente isso.</b><br>
+        Veja os produtos mais parecidos com o que você digitou:</div>
+        <section class="grupo"><div class="grid">${sug.map(card).join('')}</div></section>`;
+      revelar();
+      return;
+    }
     lista.innerHTML = `<div class="vazio"><b>Nenhum produto encontrado.</b><br>
       Tente outro termo ou fale direto com um vendedor pelo WhatsApp.</div>`;
     return;
   }
   const entradaNeutra = fCat === 'todos' && fMarca === 'todas' && !q && !viuTudo;
-  const carrossel = document.getElementById('carrossel');
-  const faixa = document.querySelector('.marcasfaixa');
 
   if (entradaNeutra) {
     carrossel.style.display = ''; faixa.style.display = '';
@@ -492,48 +513,128 @@ const rowCat = document.getElementById('rowCat');
 const rowMarca = document.getElementById('rowMarca');
 
 function normaliza(s){
-  return String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'')
-    .replace(/[^a-z0-9]+/g,' ').trim();
+  return String(s||'').toLowerCase().replace(/ç/g,'s').normalize('NFD')
+    .replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
 }
-function distancia(a,b){
-  if (Math.abs(a.length-b.length) > 2) return 9;
+// "como se fala": iguala letras que o pessoal confunde ao escrever
+function fonetica(w){
+  return w
+    .replace(/ph/g,'f').replace(/[cs]h/g,'x').replace(/lh/g,'li').replace(/nh/g,'ni')
+    .replace(/qu?/g,'k').replace(/gu([ei])/g,'g$1')
+    .replace(/sc([ei])/g,'s$1').replace(/c([eiy])/g,'s$1').replace(/c/g,'k')
+    .replace(/z/g,'s').replace(/w/g,'v').replace(/y/g,'i').replace(/h/g,'')
+    .replace(/e/g,'i').replace(/o/g,'u').replace(/n([bp])/g,'m$1')
+    .replace(/(.)\1+/g,'$1');
+}
+function distancia(a,b,teto){
+  if (Math.abs(a.length-b.length) > teto) return 99;
   let ant = Array.from({length:b.length+1},(_,j)=>j);
   for (let i=1;i<=a.length;i++){
-    const at=[i];
-    for (let j=1;j<=b.length;j++)
+    const at=[i]; let menor=i;
+    for (let j=1;j<=b.length;j++){
       at[j]=Math.min(ant[j]+1, at[j-1]+1, ant[j-1]+(a[i-1]===b[j-1]?0:1));
+      if (at[j]<menor) menor=at[j];
+    }
+    if (menor>teto) return 99;
     ant=at;
   }
   return ant[b.length];
+}
+function limite(n){ return n<=3 ? 0 : n<=7 ? 1 : 2; }
+
+function prepara(texto){
+  const txt = normaliza(texto);
+  const pal = txt.split(' ').filter(Boolean);
+  const fpal = pal.map(fonetica);
+  const cand = new Set();
+  fpal.forEach((w,k) => {
+    cand.add(w);
+    if (fpal[k+1]) cand.add(w+fpal[k+1]);
+    if (fpal[k+1] && fpal[k+2]) cand.add(w+fpal[k+1]+fpal[k+2]);
+  });
+  return { txt: ' '+txt, compacto: pal.join(''), fon: ' '+fpal.join(' '),
+           fonCompacto: fpal.join(''), cand: [...cand].filter(w => w.length >= 3),
+           pal: [...new Set(fpal)].filter(w => w.length >= 5) };
 }
 const IDX = new Map();
 function indice(p){
   let r = IDX.get(p);
   if (!r){
-    const txt = normaliza(p.nome+' '+p.desc+' '+p.marca+' '+p.bloco+' '+(p.var||''));
-    r = {txt, compacto: txt.replace(/ /g,''), palavras: [...new Set(txt.split(' '))]};
+    r = { nome: prepara(p.nome+' '+p.marca+' '+(p.var||'')),
+          tudo: prepara(p.nome+' '+p.desc+' '+p.marca+' '+p.bloco+' '+(p.var||'')) };
     IDX.set(p,r);
   }
   return r;
 }
-function casaTermo(t, r){
-  if (r.txt.includes(t) || r.compacto.includes(t)) return true;
-  if (t.length < 4) return false;
-  const lim = t.length >= 7 ? 2 : 1;
-  return r.palavras.some(w => {
-    if (w.length < 3) return false;
-    if (distancia(t, w) <= lim) return true;
-    if (t.length < 6) return false;
-    for (let d = -1; d <= 1; d++)
-      if (distancia(t, w.slice(0, t.length + d)) <= lim) return true;
-    return false;
-  });
+// nota de 0 a 1 de um termo digitado para um produto
+function notaTermo(t, r){
+  const f = fonetica(t);
+  // nome e marca: aceita palavras juntas, escrita "como se fala" e erro de digitação
+  if (r.nome.txt.includes(' '+t)) return 1;
+  if (t.length >= 3 && r.nome.compacto.includes(t)) return .95;
+  if (f.length >= 3 && (r.nome.fon.includes(' '+f) || r.nome.fonCompacto.includes(f))) return .9;
+  // descrição e categoria: só palavra começando igual (evita resultado aleatório)
+  if (r.tudo.txt.includes(' '+t)) return .6;
+  if (f.length >= 4 && r.tudo.fon.includes(' '+f)) return .55;
+  const lim = limite(f.length);
+  if (!lim) return 0;
+  let melhor = 99;
+  for (const w of r.nome.cand){
+    let d = distancia(f, w, lim);
+    if (d && w.length > f.length && f.length >= 5)
+      d = Math.min(d, distancia(f, w.slice(0, f.length), lim) + .3);  // palavra inteira parecida vale mais que começo parecido
+    if (d < melhor) melhor = d;
+    if (!melhor) break;
+  }
+  if (melhor <= lim + .3) return .8 - .15*melhor;
+  // erro de digitação em palavra da descrição ou categoria: só palavras longas, 1 letra de diferença
+  if (f.length >= 6)
+    for (const w of r.tudo.pal)
+      if (distancia(f, w, 1) <= 1) return .45;
+  return 0;
 }
-function casaBusca(p){
+function notaConsulta(termos, r){
+  let soma = 0;
+  for (const t of termos){
+    const n = notaTermo(t, r);
+    if (!n) return 0;
+    soma += n;
+  }
+  return soma / termos.length;
+}
+let cacheQ = null, cacheNotas = new Map();
+function nota(p){
   const q = normaliza(fQ);
-  if (!q) return true;
+  if (!q) return 1;
+  if (cacheQ !== q){ cacheQ = q; cacheNotas = new Map(); }
+  if (cacheNotas.has(p)) return cacheNotas.get(p);
   const r = indice(p);
-  return q.split(' ').every(t => casaTermo(t, r));
+  const termos = q.split(' ').filter(t => t.length > 1 || q.length <= 2);
+  const lista = termos.length ? termos : [q.replace(/ /g,'')];
+  let n = notaConsulta(lista, r);
+  if (q.includes(' ')) n = Math.max(n, notaConsulta([q.replace(/ /g,'')], r));
+  cacheNotas.set(p, n);
+  return n;
+}
+function casaBusca(p){ return nota(p) > 0; }
+
+// quando nada casa: produtos com o nome mais parecido com o que foi digitado
+function parecidos(qtd){
+  const f = fonetica(normaliza(fQ).replace(/ /g,''));
+  if (f.length < 3) return [];
+  return PRODUTOS.map(p => {
+      const r = indice(p).nome;
+      let d = 99;
+      for (const w of r.cand.concat([r.fonCompacto])){
+        if (w[0] !== f[0]) continue;   // a primeira letra (som) quase sempre o pessoal acerta
+        const alvo = w.length > f.length ? w.slice(0, f.length) : w;
+        d = Math.min(d, distancia(f, alvo, 6) + Math.max(0, f.length - w.length)*.5);
+      }
+      return {p, s: 1 - d / f.length};
+    })
+    .filter(o => o.s >= (f.length < 6 ? .7 : .5))
+    .sort((a,b) => b.s - a.s)
+    .slice(0, qtd).map(o => o.p);
 }
 
 function montaChips(){
@@ -599,7 +700,11 @@ rowMarca.addEventListener('click', e => {
 });
 
 let t; document.getElementById('q').addEventListener('input', e => {
-  clearTimeout(t); t = setTimeout(() => { fQ = e.target.value; render(); }, 130);
+  clearTimeout(t); t = setTimeout(() => {
+    fQ = e.target.value;
+    if (fQ.trim()) { fCat = 'todos'; fMarca = 'todas'; }
+    render();
+  }, 130);
 });
 render();
 
